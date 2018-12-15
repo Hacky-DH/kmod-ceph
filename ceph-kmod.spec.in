@@ -1,0 +1,160 @@
+%define kmod_name ceph
+
+Name:           %{kmod_name}-kmod
+Version:        @VERSION@
+Release:        1%{?dist}
+Group:          System Environment/Kernel
+License:        GPLv2
+Summary:        %{kmod_name} kernel module(s)
+Vendor:         DHacky
+Packager:       DHacky <dhgacky@gmail.com>
+URL:            http://www.centos.org/
+
+BuildRequires:  kernel >= 3.10.0
+BuildRequires:  kernel-headers >= 3.10.0
+BuildRequires:  kernel-devel >= 3.10.0
+BuildRequires:  redhat-rpm-config
+BuildRequires:  gcc-c++ >= 4.8.5
+BuildRequires:  make
+BuildRoot:      %{_tmppath}/%{name}-%{version}-%{release}-build-%(%{__id_u} -n)
+ExclusiveArch:  i686 x86_64
+
+Source:  %{kmod_name}-%{version}.tar.bz2
+Source1:  lib%{kmod_name}-%{version}.tar.bz2
+
+############################################################################## 
+## package kmod-ceph begin                                                  ## 
+############################################################################## 
+ 
+%package -n kmod-%{kmod_name} 
+Summary:	%{kmod_name} kernel module(s) 
+Group:		System Environment/Kernel 
+Provides:	kernel-modules >= 3.10.0 
+Provides:	kmod-%{kmod_name}
+Prefix:        /lib/modules/extra/%{kmod_name}
+Requires:      /sbin/lsmod
+Requires:      /sbin/modprobe
+Requires:      /bin/xz
+Requires:      /bin/sed
+Requires:      /bin/grep
+Requires:      /bin/strip
+%define libname lib%{kmod_name}
+%define backup_libxz %{prefix}/kmod-%{libname}-bak.xz
+%define backup_xz %{prefix}/kmod-%{kmod_name}-bak.xz
+
+%description -n kmod-%{kmod_name}
+This package provides the %{kmod_name} and %{libname} kernel modules
+built for the Linux kernel 3.10.0 for the x86_64 family of processors.
+
+%pre -n kmod-%{kmod_name}
+/sbin/lsmod | /bin/grep -wq ^%{kmod_name}
+[[ $? -eq 0 ]] && { /sbin/modprobe -r %{kmod_name} || exit 1; }
+/sbin/lsmod | /bin/grep -wq ^%{libname}
+[[ $? -eq 0 ]] && { /sbin/modprobe -r %{libname} || exit 1; }
+exit 0
+
+%post -n kmod-%{kmod_name}
+action(){
+	local p=$1;shift
+	local name=$1;shift
+	local old_xz=$1;shift
+	local backup_xz=$1shift
+	if [[ $p -eq 1 && -f "${old_xz}" ]];then
+	        #first install, backup the old kernel module
+	        /bin/mv ${old_xz} ${backup_xz}
+	fi
+	/bin/cp %{prefix}/${name}.ko.xz ${old_xz}
+	/sbin/modprobe ${name}
+}
+old_xz=/lib/modules/$(/bin/uname -r)/kernel/net/ceph/%{libname}.ko.xz
+action $1 %{libname} $old_xz %{backup_libxz}
+old_xz=/lib/modules/$(/bin/uname -r)/kernel/fs/ceph/%{kmod_name}.ko.xz
+action $1 %{kmod_name} $old_xz %{backup_xz}
+exit 0
+
+%preun -n kmod-%{kmod_name}
+action(){
+	local name=$1;shift
+	local old_xz=$1;shift
+	local backup_xz=$1;shift
+        /sbin/lsmod | /bin/grep -wq ^${name} && /sbin/modprobe -r ${name}
+        #uninstall, restore backup module
+        if [[ -f ${backup_xz} ]];then
+                /bin/mv ${backup_xz} ${old_xz}
+        fi
+	return 0
+}
+if [[ $1 -eq 0 ]];then
+	action %{kmod_name} /lib/modules/$(/bin/uname -r)/kernel/fs/ceph/%{kmod_name}.ko.xz %{backup_xz}
+	action %{libname} /lib/modules/$(/bin/uname -r)/kernel/net/ceph/%{libname}.ko.xz %{backup_libxz}
+fi
+exit 0
+
+%postun -n kmod-%{kmod_name}
+if [[ $1 -eq 0 ]];then
+        /sbin/modprobe %{libname}
+        /sbin/modprobe %{kmod_name}
+fi
+exit 0
+
+%files -n kmod-%{kmod_name}
+%defattr(644,root,root,755)
+%config /etc/depmod.d/kmod-%{kmod_name}.conf
+%{prefix}
+
+##############################################################################
+## package kmod-ceph end                                                    ##
+##############################################################################
+
+# Disable the building of the debug package(s).
+%define debug_package %{nil}
+
+# Define the filter.
+%define __find_requires sh %{_builddir}/%{buildsubdir}/filter-requires.sh
+
+%description
+This package provides the CentOS-7 bug-fixed %{kmod_name} kernel module.
+It is built to depend upon the specific ABI provided by a range of releases
+of the same variant of the Linux kernel and not on any one specific build.
+
+%prep
+%setup -q -c
+%setup -q -c -T -D -b 1
+echo "/usr/lib/rpm/redhat/find-requires | %{__sed} -e '/^ksym.*/d'" > filter-requires.sh
+echo "override %{kmod_name} * weak-updates/%{kmod_name}" > kmod-%{kmod_name}.conf
+
+%build
+%{__make} -C "@KERNEL_SOURCE@" %{?_smp_mflags} modules M=$PWD/%{kmod_name}-%{version}
+%{__make} -C "@KERNEL_SOURCE@" %{?_smp_mflags} modules M=$PWD/lib%{kmod_name}-%{version}
+
+%install
+%{__rm} -rf %{buildroot}
+%{__install} -d %{buildroot}%{_sysconfdir}/depmod.d/
+%{__install} kmod-%{kmod_name}.conf %{buildroot}%{_sysconfdir}/depmod.d/
+%{__install} -d %{buildroot}%{prefix}
+compress(){
+	local ko=$1
+	/bin/strip --strip-debug ${ko}
+	/bin/xz --check=crc32 --lzma2=dict=512KiB -f ${ko}
+}
+ko=$PWD/%{kmod_name}-%{version}/%{kmod_name}.ko
+compress $ko
+%{__install} ${ko}.xz %{buildroot}%{prefix}/%{kmod_name}.ko.xz
+ko=$PWD/lib%{kmod_name}-%{version}/lib%{kmod_name}.ko
+compress $ko
+%{__install} ${ko}.xz %{buildroot}%{prefix}/lib%{kmod_name}.ko.xz
+
+%clean
+%{__rm} -rf %{buildroot}
+
+%changelog
+* Fri Nov 23 2018 DHacky <dhgacky@gmail.com> - 0.0.3
+- mount cephfs with domain name
+
+* Mon Nov 12 2018 DHacky <dhgacky@gmail.com> - 0.0.2
+- adapt to 3.10.0-* kernel
+
+* Sat Nov 10 2018 DHacky <dhgacky@gmail.com> - 0.0.1
+- fix error handling in ceph_aio_read
+- https://github.com/ceph/ceph-client/commit/0d7718f666be181fda1ba2d08f137d87c1419347
+
